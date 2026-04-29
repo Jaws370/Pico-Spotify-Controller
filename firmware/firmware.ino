@@ -58,17 +58,22 @@ void save_to_flash(const char* filename, uint8_t* data, uint32_t len) {
   f.close();
 }
 
-void box_blur_bottom(uint16_t* buf) {
+void blur_and_darken(uint16_t* buf, float luminosity = 0.4f) {
+  // create temp buf for accurate blurring
+  const uint16_t* temp_buf = buf;
+  // loop over all pixels after the BLUR_START
   for (int y = BLUR_START; y < HEIGHT; y++) {
     for (int x = 0; x < WIDTH; x++) {
       int r = 0, g = 0, b = 0, count = 0;
-
-      for (int ky = -BLUR_RADIUS; ky <= BLUR_RADIUS; ky++) {
-        for (int kx = -BLUR_RADIUS; kx <= BLUR_RADIUS; kx++) {
-          int nx = x + kx;
-          int ny = y + ky;
-          if (nx >= 0 && nx < WIDTH && ny >= 0 && ny < HEIGHT) {
-            uint16_t px = buf[ny * WIDTH + nx];
+      // loop through all pixels in BLUR_RADIUS
+      for (int off_y = -BLUR_RADIUS; off_y <= BLUR_RADIUS; off_y++) {
+        for (int off_x = -BLUR_RADIUS; off_x <= BLUR_RADIUS; off_x++) {
+          int curr_x = x + off_x;
+          int curr_y = y + off_y;
+          // if in bounds (no overflow)
+          if (curr_x >= 0 && curr_x < WIDTH && curr_y >= 0 && curr_y < HEIGHT) {
+            // get the pixel
+            uint16_t px = temp_buf[curr_y * WIDTH + curr_x];
             r += (px & 0xF800) >> 11;
             g += (px & 0x07E0) >> 5;
             b += (px & 0x001F);
@@ -76,22 +81,30 @@ void box_blur_bottom(uint16_t* buf) {
           }
         }
       }
-
-      buf[y * WIDTH + x] = ((r / count) << 11) | ((g / count) << 5) | (b / count);
+      // reassign pixel with blur and add darkening effect
+      buf[y * WIDTH + x] = ((int)((r / count) * luminosity) << 11) | ((int)((g / count) * luminosity) << 5) | (int)((b / count) * luminosity);
     }
   }
 }
 
-void darken_bottom(uint16_t* buf, float factor = 0.4f) {
-  for (int y = BLUR_START; y < HEIGHT; y++) {
-    for (int x = 0; x < WIDTH; x++) {
-      uint16_t px = buf[y * WIDTH + x];
-      uint8_t r = ((px & 0xF800) >> 11) * factor;
-      uint8_t g = ((px & 0x07E0) >> 5) * factor;
-      uint8_t b = ((px & 0x001F)) * factor;
-      buf[y * WIDTH + x] = (r << 11) | (g << 5) | b;
-    }
+void print_text(Adafruit_ST7789& scr, const char* text, int16_t x, int16_t y, int16_t max_width) {
+  int16_t _x, _y;
+  uint16_t w, _h;
+  char buf[64];
+  // copies string onto buffer (without overflow)
+  strncpy(buf, text, sizeof(buf));
+  // sets end of the buf to 0
+  buf[sizeof(buf) - 1] = '\0';
+
+  int len = strlen(buf);
+  while (len > 0) {
+    scr.getTextBounds(buf, x, y, &_x, &_y, &w, &_h);
+    if (w <= max_width) break;
+    buf[--len] = '\0';
   }
+
+  scr.setCursor(x, y);
+  scr.print(buf);
 }
 
 void setup() {
@@ -152,21 +165,13 @@ void loop() {
     save_to_flash("/current.raw", (uint8_t*)imgBuf, byte_count);
 
     // add blur
-    box_blur_bottom(imgBuf);
-    darken_bottom(imgBuf);
+    blur_and_darken(imgBuf);
 
     // prep screen
     scr.startWrite();
     scr.setAddrWindow(0, 0, WIDTH, HEIGHT);  // left corner at 0, 0 and fully editable screen
     scr.writePixels(imgBuf, WIDTH * HEIGHT);
     scr.endWrite();
-
-    scr.setTextColor(ST77XX_WHITE);
-    scr.setFont(&FreeMono9pt7b);
-    scr.setCursor(10, BLUR_START + 15);
-    scr.print((const char*)doc["title"]);
-    scr.setCursor(10, BLUR_START + 35);
-    scr.print((const char*)doc["artist"]);
 
   } else if (dt_sig[0] == 'T' && dt_sig[1] == 'R') {
     // case json track data transfer
@@ -182,7 +187,12 @@ void loop() {
     // parse
     DeserializationError err = deserializeJson(doc, jsonBuf);
     if (err) return;
-    
+
+    // print text to screen
+    scr.setTextColor(ST77XX_WHITE);
+    scr.setFont(&FreeMono9pt7b);
+    print_text(scr, doc["title"], 10, BLUR_START + 18, WIDTH - 20);
+    print_text(scr, doc["artist"], 10, BLUR_START + 38, WIDTH - 20);
   } else {
     // case data transfer signal was malformed
     Serial.read();
@@ -190,8 +200,8 @@ void loop() {
   }
 }
 
-/*
-setup1() {
+void setup1() {
+  pinMode(LED_BUILTIN, OUTPUT);
   pinMode(ENC_CL, INPUT_PULLUP);
   pinMode(ENC_DT, INPUT_PULLUP);
   pinMode(ENC_SW, INPUT_PULLUP);
@@ -200,6 +210,45 @@ setup1() {
   pinMode(BTN_3, INPUT_PULLUP);
 }
 
-loop1() {
-  return;
-}*/
+void loop1() {
+  static uint32_t last_press = 0;
+  static uint32_t last_enc = 0;
+  static bool last_cl = HIGH;
+  const uint32_t DEBOUNCE_MS = 200;
+  const uint32_t ENC_DEBOUNCE_MS = 50;
+  uint32_t now = millis();
+
+  // buttons
+  if (now - last_press > DEBOUNCE_MS) {
+    if (digitalReadFast(BTN_1) == LOW) {
+      digitalWriteFast(LED_BUILTIN, HIGH);
+      last_press = now;
+    } else if (digitalReadFast(BTN_2) == LOW) {
+      digitalWriteFast(LED_BUILTIN, HIGH);
+      last_press = now;
+    } else if (digitalReadFast(BTN_3) == LOW) {
+      digitalWriteFast(LED_BUILTIN, HIGH);
+      last_press = now;
+    } else if (digitalReadFast(ENC_SW) == LOW) {
+      digitalWriteFast(LED_BUILTIN, HIGH);
+      last_press = now;
+    }
+  }
+
+  // encoder
+  bool cl = digitalReadFast(ENC_CL);
+  if (cl != last_cl && cl == LOW) {
+    bool dt = digitalReadFast(ENC_DT);  // read DT immediately
+    if (now - last_enc > ENC_DEBOUNCE_MS) {
+      if (dt == HIGH) {
+        digitalWriteFast(LED_BUILTIN, HIGH);  // clockwise
+      } else {
+        digitalWriteFast(LED_BUILTIN, LOW);  // counter-clockwise
+      }
+      last_enc = now;
+    }
+  }
+  last_cl = cl;
+
+  delay(1);
+}
