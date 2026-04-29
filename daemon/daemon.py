@@ -40,8 +40,8 @@ def fetch_current_track() -> dict:
     
     # dict return format
     return {
-        "title": item['name'],
-        "artist": ", ".join(artist['name'] for artist in item['artists']),
+        "title": item['name'].split('(')[0].strip(),
+        "artist": item['artists'][0]['name'],
         "album": item['album']['name'],
         "uri": item['uri'],
         "art_url": item['album']['images'][0]['url'],
@@ -130,11 +130,14 @@ def run(port: str, baud: int = 2000000):
             cs = fetch_current_track()
             if cs and cs['uri'] != last_uri:
                 print(f"Now playing: {cs['title']} by {cs['artist']}")
-                track_json = tr_to_bytes(cs)
-                push_data(ser, b'TR', track_json)
+
                 img = fetch_album_art(cs['art_url'])
                 raw = img_to_raw(img)
                 push_data(ser, b'IM', raw)
+
+                track_json = tr_to_bytes(cs)
+                push_data(ser, b'TR', track_json)
+
                 last_uri = cs['uri']
         except Exception as e:
             print(f"Error: {e}")
